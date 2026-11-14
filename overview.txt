@@ -1,0 +1,362 @@
+================================================================================
+NEXUS — PROJECT OVERVIEW
+A futuristic, AI-powered operating system that runs in the browser AND as a
+real Chromium desktop app (Electron).
+Last updated: 2026-07-04
+================================================================================
+
+NOTE: The folder name "resume ats analyzer" is historical — this project is
+NEXUS, a browser-based "AI operating system" (window manager, 3D space
+wallpaper, AI assistant, code studio, notes, calendar, files, and more).
+
+
+--------------------------------------------------------------------------------
+1. WHAT HAS BEEN BUILT (CHRONOLOGICAL)
+--------------------------------------------------------------------------------
+
+PHASE 0 — Base OS (pre-existing)
+  - Full OS shell: 3D space wallpaper, window manager (drag/resize/snap),
+    dock, taskbar, command palette (Cmd/Ctrl+K), notification center, widgets.
+  - 7 apps: AI Assistant, Code Studio, Notes, Dashboard, File Manager,
+    Calendar, Settings.
+  - Local-first: runs with zero configuration; all state persisted to
+    localStorage via Zustand `persist`.
+  - AI Assistant powered by Google Gemini with a local mock fallback.
+
+PHASE 1 — Firebase Authentication (complete)
+  - Real Firebase Auth only (NO mock authentication).
+  - Providers: Google, GitHub, Email/Password.
+  - Features: Forgot Password, Remember Me (local vs session persistence),
+    Logout, Persistent Sessions, Protected Routes (Desktop is gated),
+    User Profile (display name + profile picture upload to Firebase Storage),
+    loading states, and friendly error handling.
+  - Offline-guest path preserves the local-first experience (explicit guest
+    mode, not fake auth).
+  - Key files:
+      src/services/auth.ts            (auth wrappers + error mapping)
+      src/store/useAuthStore.ts       (status/user/remember/guest)
+      src/providers/AuthProvider.tsx  (onAuthStateChanged, session restore)
+      src/components/auth/AuthScreen.tsx, UserMenu.tsx, Avatar.tsx
+      src/features/settings/AccountSection.tsx
+      src/components/shell/OS.tsx      (auth gate: loading/signedOut/authed/guest)
+
+PHASE 2 — MongoDB Atlas backend + full sync wiring (complete)
+  - MongoDB Atlas is the primary database, accessed through a scalable
+    Next.js API-Routes backend.
+  - Architecture: schemas + indexes + validation + error handling +
+    modular services + repository pattern + secured routes.
+  - SECURITY: every protected API request verifies the Firebase ID token
+    (server-side, via firebase-admin) BEFORE any handler runs.
+  - Mongo credentials never reach the client (server-only modules + env vars).
+  - Full sync: when authenticated, stores pull from / push to MongoDB;
+    guests/offline continue to use localStorage unchanged.
+
+PHASE 3 — Real Chromium Browser via Electron shell (complete)
+  - The Browser app was upgraded from an <iframe> (blocked by X-Frame-Options
+    on most sites) to a REAL Chromium browser using Electron's WebContentsView.
+  - Nexus is wrapped in an Electron desktop shell; the Next.js UI renders
+    unchanged inside it. Only the Browser's viewport changed.
+  - Full capabilities: any website, logins, cookies, localStorage/sessionStorage,
+    downloads (pause/resume/cancel/reveal), permissions (camera/mic/geo/clipboard/
+    notifications), DevTools, zoom, find, PDF, context menu, HTML fullscreen,
+    new-window -> new-tab, multi-tab (views persist across tab switches).
+  - WEB FALLBACK PRESERVED: served on the web (no Electron), the Browser falls
+    back to the original iframe automatically. One codebase, runs both ways.
+  - Security: contextIsolation + sandbox + no nodeIntegration; browsed sites get
+    no preload; isolated persistent session "persist:nexus-web"; all IPC funneled
+    through a whitelisted channel list.
+  - Key files:
+      electron/main/index.js          app lifecycle, window, sessions, wiring
+      electron/main/next-server.js    waits for (dev) / spawns (prod) Next server
+      electron/main/browser-views.js  WebContentsView-per-tab engine
+      electron/main/permissions.js    site permission handlers
+      electron/main/downloads.js      download progress + controls
+      electron/ipc/channels.js        channel-name registry
+      electron/ipc/handlers.js        ipcMain routing (trust boundary)
+      electron/preload/index.js       contextBridge -> window.nexusBrowser
+      src/lib/nexusBridge.ts          typed bridge + isElectron()
+      src/features/browser/useNativeBrowser.ts   store <-> engine (no-op on web)
+      src/features/browser/NativeViewport.tsx     placeholder + bounds/visibility
+      src/features/browser/Viewport.tsx           branches native vs iframe
+  - Full details: see ELECTRON.md.
+  - Assumptions: single Browser window (tabs are one global store); the native
+    view hides while a panel/menu/address-dropdown is open or another window
+    overlaps it (a native view always paints above HTML).
+
+PHASE 4 — User Profile system: name everywhere + greeting polish (complete)
+  - The signed-in user's name (never their full email) is shown consistently:
+    desktop greeting, taskbar profile, user menu, dashboard welcome, profile card.
+  - One source of truth for identity:
+      src/lib/userProfile.ts     getUserDisplayName(user), getUserInitial(name),
+                                 getGreeting(hour), usernameFromEmail(email)
+      src/hooks/useUserProfile.ts  useUserProfile() -> { user, isAuthenticated,
+                                 isGuest, displayName, initial, photoURL, email }
+  - Display-name fallback order:
+      displayName -> email username (before "@", capitalized) -> "Guest"
+      e.g. displayName "Yogesh Kumar" -> "Yogesh Kumar";
+           displayName null + yogesh123@gmail.com -> "Yogesh123";
+           no authenticated user -> "Guest".
+  - Avatar shows the first letter of the resolved name (Guest -> "G").
+  - Desktop greeting redesigned for readability over the animated galaxy
+    (animation untouched): time 64-72px; "Good <time>," 22px; name 34-40px/700;
+    inside a glass panel (rgba(15,23,42,.18) + backdrop-blur 16px + 1px white
+    border, radius 18px), soft text-shadow, and a radial darken behind only the
+    greeting. Greeting changes by hour: Morning / Afternoon / Evening / Night.
+  - AuthProvider no longer mirrors the account name into settings, so a
+    signed-out guest correctly shows "Guest" (settings displayName default "").
+  - Files touched: src/components/shell/Widgets.tsx, src/features/dashboard/index.tsx,
+    src/components/auth/UserMenu.tsx, src/features/settings/AccountSection.tsx,
+    src/store/useSettingsStore.ts, src/providers/AuthProvider.tsx.
+
+
+--------------------------------------------------------------------------------
+2. THE 10 MONGODB COLLECTIONS
+--------------------------------------------------------------------------------
+
+  1. users             — one doc per Firebase account (_id = uid)
+  2. settings          — one doc per user (theme, accent, performance, etc.)
+  3. notes             — markdown notes (folders denormalized onto each note)
+  4. calendar_events   — calendar entries (date key YYYY-MM-DD)
+  5. desktop_layout    — window manager snapshot (geometry + z-order)
+  6. installed_apps    — installed apps + dock placement
+  7. notifications     — per-user notification feed
+  8. ai_chat_history   — AI Assistant conversations (messages embedded)
+  9. file_metadata     — File Manager file metadata
+ 10. recent_files      — recently accessed files (recency-ordered, trimmed)
+
+Each collection has: a TypeScript document type, a MongoDB $jsonSchema
+validator, indexes (incl. unique {userId, clientId} where applicable), and
+hand-written input validation in its service.
+
+
+--------------------------------------------------------------------------------
+3. BACKEND ARCHITECTURE  (src/server/ — all guarded with `import "server-only"`)
+--------------------------------------------------------------------------------
+
+  db/
+    mongo.ts            MongoClient singleton (HMR-safe), getDb()
+    collections.ts      collection-name registry + typed accessor
+    indexes.ts          ensureSchema(): creates collections + $jsonSchema
+                        validators + indexes (idempotent, memoized)
+  auth/
+    admin.ts            firebase-admin singleton; verifyIdToken()
+  http/
+    errors.ts           ApiError + BadRequest/Unauthorized/Forbidden/
+                        NotFound/Conflict/Validation
+    respond.ts          json() / fail() — consistent JSON, hides 500 details
+    withAuth.ts         wraps every route: verify ID token -> ensureSchema ->
+                        handler; funnels errors to JSON
+  validation.ts         tiny hand-written validators (no zod) -> 422 on bad input
+  schemas/              per-collection: doc type + $jsonSchema + indexes
+  repositories/         REPOSITORY PATTERN
+    base.repository.ts        collection handle
+    userScoped.repository.ts  forces {userId} on every op (cross-user isolation)
+    singleton.repository.ts   one doc per user, keyed by _id = uid
+    <one repo per collection>
+  services/             MODULAR SERVICES: validate -> map -> repo, return DTOs
+    users / settings / notes / events / layout / apps /
+    notifications / chats / files / recentFiles
+
+API ROUTES (src/app/api/, runtime = "nodejs", all wrapped in withAuth):
+  Singletons : /me, /settings, /layout                (GET / PUT)
+  Collections: /notes, /events, /apps, /notifications,
+               /chats, /files, /recent-files
+               (GET list, POST create, PUT bulk replace-all for sync)
+               + /<resource>/[id] (PUT / DELETE item)
+  Extras     : /notifications PATCH (mark all read),
+               /recent-files POST (record access + trim)
+  Unchanged  : /api/ai/chat (existing Gemini streaming endpoint)
+
+
+--------------------------------------------------------------------------------
+4. CLIENT API + SYNC LAYER
+--------------------------------------------------------------------------------
+
+  src/services/api/client.ts     apiFetch() — attaches the Firebase ID token as
+                                 "Authorization: Bearer <token>" on every call
+  src/services/api/resources.ts  typed methods per domain (meApi, settingsApi,
+                                 notesApi, eventsApi, layoutApi, appsApi,
+                                 notificationsApi, chatsApi, filesApi,
+                                 recentFilesApi)
+  src/services/sync/syncEngine.ts  pull-on-login + debounced push-on-change
+                                   (snapshot replace per domain, echo-guarded)
+  src/providers/SyncProvider.tsx   starts/stops sync based on auth status
+
+  New client stores (so Calendar/Files can sync; UI unchanged):
+    src/store/useCalendarStore.ts, useFilesStore.ts,
+    useRecentFilesStore.ts, useAppsStore.ts
+
+  Behavior:
+    - Authenticated -> data syncs to MongoDB Atlas (localStorage as cache).
+    - Guest / signed-out -> localStorage only (original behavior).
+    - No DB/admin credentials -> API returns 503, sync silently disables,
+      app keeps working local-first.
+
+
+--------------------------------------------------------------------------------
+5. TECH STACK
+--------------------------------------------------------------------------------
+
+FRAMEWORK / LANGUAGE
+  - Next.js 14.2.15 (App Router, API Routes, route handlers)
+  - React 18.3 + React DOM
+  - TypeScript 5.6 (strict mode)
+
+STYLING / UI
+  - Tailwind CSS 3.4 (CSS-variable-driven theming, runtime accent swapping)
+  - Radix UI (dialog, scroll-area, slider, slot, switch, tooltip)
+  - lucide-react (icons)
+  - class-variance-authority, clsx, tailwind-merge (styling utilities)
+
+STATE / DATA
+  - Zustand 4.5 (stores; `persist` middleware for localStorage)
+  - @tanstack/react-query 5 (query client provider)
+
+3D / ANIMATION
+  - three.js 0.169
+  - @react-three/fiber, @react-three/drei, @react-three/postprocessing
+  - framer-motion 11, gsap 3.12
+
+AUTH / DATABASE / BACKEND
+  - Firebase 10 (client SDK: Auth + Storage)
+  - firebase-admin 12 (server-side ID-token verification)
+  - mongodb 6 (native driver — NO Mongoose; explicit repository pattern)
+  - server-only (guards server modules from client bundles)
+
+AI
+  - @google/generative-ai (Gemini); local mock engine fallback
+
+EDITOR / CONTENT
+  - @monaco-editor/react (Code Studio)
+  - react-markdown + remark-gfm (Notes / chat rendering)
+
+TOOLING
+  - PostCSS, Autoprefixer
+  - ESLint config available (next lint), tsc for typechecking
+
+
+--------------------------------------------------------------------------------
+6. ENVIRONMENT VARIABLES
+--------------------------------------------------------------------------------
+
+Client-exposed (safe; NEXT_PUBLIC_*):
+  NEXT_PUBLIC_FIREBASE_API_KEY
+  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+  NEXT_PUBLIC_FIREBASE_PROJECT_ID
+  NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+  NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+  NEXT_PUBLIC_FIREBASE_APP_ID
+
+Server-only (NEVER prefixed with NEXT_PUBLIC; never sent to the browser):
+  MONGODB_URI                   Atlas connection string
+  MONGODB_DB                    database name (default "nexus")
+  FIREBASE_ADMIN_PROJECT_ID
+  FIREBASE_ADMIN_CLIENT_EMAIL
+  FIREBASE_ADMIN_PRIVATE_KEY    (newlines escaped as \n; un-escaped at runtime)
+
+AI (optional):
+  GEMINI_API_KEY                without it, the AI uses a local mock engine
+  GEMINI_MODEL                  default gemini-2.5-flash
+
+Values live in .env.local (git-ignored). .env.local.example documents them.
+Do NOT commit real secrets.
+
+
+--------------------------------------------------------------------------------
+7. PROJECT STRUCTURE (KEY DIRECTORIES)
+--------------------------------------------------------------------------------
+
+  src/app/            Next.js routes (layout, page, /api/* route handlers)
+  src/components/      ui/ (Button, Input, GlassPanel, ...), shell/ (OS, Desktop,
+                       Taskbar, Dock, ...), window/, auth/
+  src/features/        ai-assistant, code-studio, notes, dashboard,
+                       file-manager, calendar, settings
+  src/providers/       QueryProvider, ThemeProvider, AuthProvider, SyncProvider
+  src/store/           Zustand stores (auth, settings, notes, chat, window,
+                       notifications, ui, calendar, files, recentFiles, apps)
+  src/services/        firebase.ts, auth.ts, mockAI.ts, api/, sync/
+  src/server/          DB / auth-admin / http / schemas / repositories / services
+  src/three/           3D wallpaper (Galaxy, Nebula, Starfield, Planet, ...)
+  src/types/           shared TypeScript types (incl. api.ts DTOs)
+  src/constants/       accents, apps registry
+  src/hooks/, src/lib/ utility hooks + helpers
+
+
+--------------------------------------------------------------------------------
+8. KEY DESIGN PRINCIPLES & GUARANTEES
+--------------------------------------------------------------------------------
+
+  - Local-first: works fully offline / for guests with zero configuration.
+  - Real Firebase auth only — no mock authentication anywhere.
+  - Every protected API request verifies the Firebase ID token server-side.
+  - MongoDB credentials never reach the client (server-only + env vars).
+  - Per-user data isolation enforced at the repository layer ({userId} filter).
+  - Validation at two layers: hand-written input validators + MongoDB
+    $jsonSchema collection validators.
+  - Graceful degradation: missing DB/admin creds -> app stays local-first.
+  - Existing design language and all UI/functionality preserved.
+
+
+--------------------------------------------------------------------------------
+9. VERIFICATION STATUS
+--------------------------------------------------------------------------------
+
+  - `npx tsc --noEmit`  : passes (clean).
+  - `npx next build`    : passes; all 18 API routes registered as dynamic.
+  - Dev server probe    : home serves 200; protected API routes return 401
+                          for missing/invalid tokens.
+  - server-only boundary: build would fail if a client bundle imported a
+                          server secret module — it does not.
+
+  With Atlas + Firebase Admin credentials present in .env.local, signing in
+  provisions the 10 collections on first authenticated request and data syncs
+  to MongoDB Atlas automatically.
+
+
+--------------------------------------------------------------------------------
+10. HOW TO RUN — WEB & DESKTOP APP
+--------------------------------------------------------------------------------
+
+  ONE-TIME SETUP
+    npm install
+    # Optional: create .env.local (copy from .env.local.example) for Firebase,
+    # MongoDB and Gemini. Without it, the app still runs local-first as a guest.
+
+  ---- A) RUN AS A WEB APP (browser) ----
+    Development:
+      npm run dev            -> http://localhost:3000
+    Production:
+      npm run build
+      npm run start          -> http://localhost:3000
+    In web mode the Browser app uses the iframe fallback (cannot embed sites
+    that block framing); everything else is fully functional.
+
+  ---- B) RUN AS A DESKTOP APP (Electron, real Chromium browser) ----
+    Development (hot reload; recommended while building):
+      npm run electron:dev
+        Starts `next dev`, waits for http://localhost:3000, then opens the
+        Nexus desktop window. First boot takes ~30-60s while Next compiles.
+        Run it in a normal terminal so you can see logs; Ctrl+C to stop.
+
+    Production (faster, no dev overhead):
+      npm run electron:build     # = next build (run once after code changes)
+      npm run electron:start     # spawns `next start` and opens the desktop app
+
+    Package an installer (advanced):
+      npm run dist               # next build + electron-builder
+        NOTE: packaging an SSR Next.js app is non-trivial (the Node server +
+        node_modules must ship with it). The "build" block in package.json is a
+        starting point, not a turnkey installer. See ELECTRON.md.
+
+    Only in the desktop app does the Browser use real Chromium (any site,
+    logins, downloads, permissions, DevTools, ...).
+
+  ---- STOP A RUNNING DESKTOP APP ----
+    Close the Nexus window, or (Windows):
+      taskkill //F //IM electron.exe
+
+  VERIFY
+    npx tsc --noEmit           # types clean
+    node --check electron/main/index.js   # (and the other electron/*.js files)
+
+================================================================================
